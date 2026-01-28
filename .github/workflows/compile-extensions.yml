@@ -173,25 +173,82 @@ jobs:
 
           echo "Generated index.json with $(ls -1 *.tar.gz | wc -l) extensions"
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: extensions-${{ github.run_number }}
-          name: "Chi Code Extensions Build #${{ github.run_number }}"
-          files: |
-            release/*.tar.gz
-            release/index.json
-          body: |
-            ## Chi Code 扩展包
-
-            自动编译于 ${{ github.event.head_commit.timestamp }}
-
-            ### 下载方式
-            ```
-            https://github.com/${{ github.repository }}/releases/download/extensions-${{ github.run_number }}/{extension_id}.tar.gz
-            ```
+      - name: Create or Update Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd release
+
+          # 创建或更新 release
+          if gh release view extensions-${{ github.run_number }} > /dev/null 2>&1; then
+            echo "Release exists"
+          else
+            echo "Creating new release..."
+            gh release create extensions-${{ github.run_number }} \
+              --title "Chi Code Extensions Build #${{ github.run_number }}" \
+              --notes "## Chi Code 扩展包
+
+          自动编译于 $(date -Iseconds)
+
+          ### 下载方式
+          \`\`\`
+          https://github.com/${{ github.repository }}/releases/download/extensions-${{ github.run_number }}/{extension_id}.tar.gz
+          \`\`\`"
+          fi
+
+      - name: Upload Release Assets with Retry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd release
+
+          # 上传函数，带指数退避重试
+          upload_with_retry() {
+            local file="$1"
+            local max_retries=5
+            local retry=0
+
+            while [ $retry -lt $max_retries ]; do
+              echo "Uploading $file (attempt $((retry+1))/$max_retries)..."
+
+              # 先删除已存在的同名文件
+              gh release delete-asset extensions-${{ github.run_number }} "$file" --yes 2>/dev/null || true
+
+              # 尝试上传
+              if gh release upload extensions-${{ github.run_number }} "$file" --clobber; then
+                echo "✓ Successfully uploaded $file"
+                return 0
+              fi
+
+              retry=$((retry+1))
+              if [ $retry -lt $max_retries ]; then
+                local wait_time=$((2**retry))
+                echo "Upload failed. Waiting ${wait_time}s before retry..."
+                sleep $wait_time
+              fi
+            done
+
+            echo "✗ Failed to upload $file after $max_retries attempts"
+            return 1
+          }
+
+          # 上传所有文件
+          failed_uploads=0
+          for file in *.tar.gz index.json; do
+            [ -f "$file" ] || continue
+            if ! upload_with_retry "$file"; then
+              failed_uploads=$((failed_uploads+1))
+            fi
+            # 每次上传后等待1秒，避免触发速率限制
+            sleep 1
+          done
+
+          if [ $failed_uploads -gt 0 ]; then
+            echo "Warning: $failed_uploads file(s) failed to upload"
+            exit 1
+          fi
+
+          echo "All files uploaded successfully!"
 
       - name: Update latest release tag
         run: |
