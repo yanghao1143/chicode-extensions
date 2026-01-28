@@ -113,23 +113,41 @@ jobs:
       - name: Generate release index
         run: |
           cd dist
-          echo "{" > index.json
-          echo '  "version": 2,' >> index.json
-          echo '  "generated_at": "'$(date -Iseconds)'",' >> index.json
-          echo '  "base_url": "https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest",' >> index.json
-          echo '  "extensions": [' >> index.json
+
+          # 读取 extensions.toml 获取仓库信息
+          cat > index.json << 'JSONEOF'
+          {
+            "version": 2,
+            "generated_at": "TIMESTAMP_PLACEHOLDER",
+            "repository": "https://github.com/yanghao1143/chicode-extensions",
+            "extensions": [
+          JSONEOF
+
+          # 替换时间戳
+          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -Iseconds)/" index.json
 
           first=true
           for f in *.tar.gz; do
             [ -f "$f" ] || continue
-            name="${f%.tar.gz}"
-            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+            ext_id="${f%.tar.gz}"
+
+            # 从原仓库的 extensions.toml 获取 repository 信息
+            repo_url=""
+            if [ -f "../extensions.toml" ]; then
+              repo_url=$(grep -A5 "^\[${ext_id}\]" ../extensions.toml 2>/dev/null | grep "repository" | cut -d'"' -f2 || echo "")
+            fi
+
+            # 如果没找到，使用默认格式
+            if [ -z "$repo_url" ]; then
+              repo_url="https://github.com/zed-industries/zed"
+            fi
+
             if [ "$first" = true ]; then
               first=false
             else
               echo "," >> index.json
             fi
-            echo -n "    {\"id\": \"$name\", \"file\": \"$f\", \"size\": $size}" >> index.json
+            echo -n "    {\"id\": \"$ext_id\", \"repository\": \"$repo_url\", \"priority\": true}" >> index.json
           done
 
           echo "" >> index.json
