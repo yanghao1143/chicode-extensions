@@ -21,7 +21,7 @@ jobs:
           submodules: false
 
       - name: Setup Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
 
