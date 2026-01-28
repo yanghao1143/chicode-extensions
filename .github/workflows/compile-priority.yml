@@ -1,0 +1,166 @@
+name: Compile Priority Extensions
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周一 UTC 0:00 自动编译
+    - cron: '0 0 * * 1'
+
+env:
+  RUST_TARGET: wasm32-wasip2
+
+jobs:
+  compile-priority:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: wasm32-wasip2
+
+      - name: Cache WASI SDK
+        id: cache-wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/.wasi-sdk
+          key: wasi-sdk-25-linux
+
+      - name: Download WASI SDK
+        if: steps.cache-wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.wasi-sdk
+          curl -L "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz" | \
+            tar -xz -C ~/.wasi-sdk --strip-components=1
+
+      - name: Generate priority list
+        run: node scripts/generate-index.js
+
+      - name: Compile priority extensions
+        run: |
+          export WASI_SDK_PATH="$HOME/.wasi-sdk"
+          export CC="${WASI_SDK_PATH}/bin/clang"
+          export AR="${WASI_SDK_PATH}/bin/ar"
+
+          mkdir -p dist
+
+          # 读取优先扩展列表
+          PRIORITY_EXTS=$(cat priority-extensions.json | jq -r '.[]')
+
+          for ext_id in $PRIORITY_EXTS; do
+            echo "=========================================="
+            echo "Processing: $ext_id"
+            echo "=========================================="
+
+            # 初始化 submodule
+            git submodule update --init --depth 1 "extensions/$ext_id" || {
+              echo "Failed to init submodule for $ext_id, skipping..."
+              continue
+            }
+
+            cd "extensions/$ext_id"
+
+            # 检查 extension.toml 是否存在
+            if [ ! -f "extension.toml" ]; then
+              echo "No extension.toml found, skipping..."
+              cd ../..
+              continue
+            fi
+
+            # 编译 Rust 扩展
+            if [ -f "Cargo.toml" ]; then
+              echo "Compiling Rust extension..."
+              cargo build --release --target wasm32-wasip2 2>&1 || {
+                echo "Cargo build failed for $ext_id"
+                cd ../..
+                continue
+              }
+
+              # 查找 wasm 文件
+              WASM_FILE=$(find target/wasm32-wasip2/release -name "*.wasm" -type f 2>/dev/null | head -1)
+              if [ -n "$WASM_FILE" ]; then
+                cp "$WASM_FILE" extension.wasm
+                echo "Created extension.wasm"
+              fi
+            fi
+
+            # 打包
+            cd ..
+            mkdir -p "../dist/$ext_id"
+            cp -r "$ext_id/extension.toml" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/extension.wasm" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/languages" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/themes" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/grammars" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/snippets" "../dist/$ext_id/" 2>/dev/null || true
+            cp -r "$ext_id/icon.png" "../dist/$ext_id/" 2>/dev/null || true
+
+            cd ../dist
+            tar -czf "${ext_id}.tar.gz" "$ext_id"
+            rm -rf "$ext_id"
+            echo "Created ${ext_id}.tar.gz"
+
+            cd ..
+            echo ""
+          done
+
+      - name: Generate release index
+        run: |
+          cd dist
+          echo "{" > index.json
+          echo '  "version": 2,' >> index.json
+          echo '  "generated_at": "'$(date -Iseconds)'",' >> index.json
+          echo '  "base_url": "https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest",' >> index.json
+          echo '  "extensions": [' >> index.json
+
+          first=true
+          for f in *.tar.gz; do
+            [ -f "$f" ] || continue
+            name="${f%.tar.gz}"
+            size=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f")
+            if [ "$first" = true ]; then
+              first=false
+            else
+              echo "," >> index.json
+            fi
+            echo -n "    {\"id\": \"$name\", \"file\": \"$f\", \"size\": $size}" >> index.json
+          done
+
+          echo "" >> index.json
+          echo "  ]" >> index.json
+          echo "}" >> index.json
+
+          echo ""
+          echo "Generated index.json:"
+          cat index.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: extensions-latest
+          name: "Chi Code Extensions (Latest)"
+          files: dist/*
+          body: |
+            ## Chi Code 扩展包 (自动编译)
+
+            更新时间: ${{ github.event.repository.updated_at }}
+
+            ### 使用方法
+
+            下载单个扩展:
+            ```
+            https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/{id}.tar.gz
+            ```
+
+            获取索引:
+            ```
+            https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/index.json
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

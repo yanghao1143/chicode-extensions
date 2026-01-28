@@ -1,0 +1,201 @@
+name: Compile Extensions
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      extension_id:
+        description: 'Specific extension to compile (leave empty for all)'
+        required: false
+        default: ''
+
+env:
+  RUST_TARGET: wasm32-wasip2
+  WASI_SDK_VERSION: "25"
+
+jobs:
+  # 第一步：生成需要编译的扩展列表
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Generate extension matrix
+        id: set-matrix
+        run: |
+          if [ -n "${{ github.event.inputs.extension_id }}" ]; then
+            # 只编译指定的扩展
+            echo "matrix={\"extension\":[\"${{ github.event.inputs.extension_id }}\"]}" >> $GITHUB_OUTPUT
+          else
+            # 从 .gitmodules 提取所有扩展 ID (限制前50个，避免超时)
+            extensions=$(grep -oP '(?<=\[submodule "extensions/)[^"]+' .gitmodules | head -50 | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            echo "matrix={\"extension\":$extensions}" >> $GITHUB_OUTPUT
+          fi
+
+  # 第二步：并行编译扩展
+  compile:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Checkout extension submodule
+        run: |
+          git submodule update --init --depth 1 extensions/${{ matrix.extension }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Cache WASI SDK
+        id: cache-wasi-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/.wasi-sdk
+          key: wasi-sdk-${{ env.WASI_SDK_VERSION }}-linux
+
+      - name: Download WASI SDK
+        if: steps.cache-wasi-sdk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/.wasi-sdk
+          curl -L "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${{ env.WASI_SDK_VERSION }}/wasi-sdk-${{ env.WASI_SDK_VERSION }}.0-x86_64-linux.tar.gz" | \
+            tar -xz -C ~/.wasi-sdk --strip-components=1
+
+      - name: Compile extension
+        id: compile
+        run: |
+          cd extensions/${{ matrix.extension }}
+
+          # 检查是否有 Cargo.toml (Rust 扩展)
+          if [ -f "Cargo.toml" ]; then
+            echo "Compiling Rust extension..."
+            export WASI_SDK_PATH="$HOME/.wasi-sdk"
+            export CC="${WASI_SDK_PATH}/bin/clang"
+            export AR="${WASI_SDK_PATH}/bin/ar"
+
+            cargo build --release --target ${{ env.RUST_TARGET }}
+
+            # 找到编译产物
+            WASM_FILE=$(find target/${{ env.RUST_TARGET }}/release -name "*.wasm" -type f | head -1)
+            if [ -n "$WASM_FILE" ]; then
+              cp "$WASM_FILE" extension.wasm
+              echo "compiled=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No Cargo.toml found, skipping Rust compilation"
+            echo "compiled=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Package extension
+        run: |
+          cd extensions
+
+          # 创建干净的打包目录
+          mkdir -p ../dist/${{ matrix.extension }}
+
+          # 复制必要文件
+          cp -r ${{ matrix.extension }}/extension.toml ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+          cp -r ${{ matrix.extension }}/extension.wasm ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+          cp -r ${{ matrix.extension }}/languages ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+          cp -r ${{ matrix.extension }}/themes ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+          cp -r ${{ matrix.extension }}/grammars ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+          cp -r ${{ matrix.extension }}/snippets ../dist/${{ matrix.extension }}/ 2>/dev/null || true
+
+          # 打包
+          cd ../dist
+          tar -czf "${{ matrix.extension }}.tar.gz" ${{ matrix.extension }}
+          rm -rf ${{ matrix.extension }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ext-${{ matrix.extension }}
+          path: dist/${{ matrix.extension }}.tar.gz
+          retention-days: 1
+
+  # 第三步：合并所有扩展并发布
+  release:
+    needs: compile
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: ext-*
+
+      - name: Prepare release
+        run: |
+          mkdir -p release
+
+          # 移动所有 tar.gz 到 release 目录
+          find artifacts -name "*.tar.gz" -exec mv {} release/ \;
+
+          # 生成索引
+          cd release
+          echo "{" > index.json
+          echo '  "version": 1,' >> index.json
+          echo '  "generated_at": "'$(date -Iseconds)'",' >> index.json
+          echo '  "extensions": [' >> index.json
+
+          first=true
+          for f in *.tar.gz; do
+            name="${f%.tar.gz}"
+            if [ "$first" = true ]; then
+              first=false
+            else
+              echo "," >> index.json
+            fi
+            echo -n "    {\"id\": \"$name\", \"download\": \"$f\"}" >> index.json
+          done
+
+          echo "" >> index.json
+          echo "  ]" >> index.json
+          echo "}" >> index.json
+
+          echo "Generated index.json with $(ls -1 *.tar.gz | wc -l) extensions"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: extensions-${{ github.run_number }}
+          name: "Chi Code Extensions Build #${{ github.run_number }}"
+          files: |
+            release/*.tar.gz
+            release/index.json
+          body: |
+            ## Chi Code 扩展包
+
+            自动编译于 ${{ github.event.head_commit.timestamp }}
+
+            ### 下载方式
+            ```
+            https://github.com/${{ github.repository }}/releases/download/extensions-${{ github.run_number }}/{extension_id}.tar.gz
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update latest release tag
+        run: |
+          git config user.name "Chi Code Bot"
+          git config user.email "bot@chicode.com"
+          git tag -f extensions-latest
+          git push -f origin extensions-latest
