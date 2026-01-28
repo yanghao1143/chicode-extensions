@@ -1,0 +1,57 @@
+name: Build Extension Index
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate Extension Index
+        run: |
+          node scripts/generate-index.js
+
+      - name: Package Extensions
+        run: |
+          mkdir -p dist
+          for dir in extensions/*/; do
+            name=$(basename "$dir")
+            tar -czf "dist/${name}.tar.gz" -C extensions "$name"
+          done
+
+          # 生成下载列表
+          ls -la dist/ > dist/manifest.txt
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: extensions-latest
+          files: |
+            dist/*.tar.gz
+            index.json
+          body: |
+            Auto-generated extension packages
+
+            Updated: ${{ github.event.head_commit.timestamp }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit index.json
+        run: |
+          git config user.name "Chi Code Bot"
+          git config user.email "bot@chicode.com"
+          git add index.json
+          git diff --staged --quiet || git commit -m "Update extension index"
+          git push
