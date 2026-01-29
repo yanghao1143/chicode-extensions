@@ -252,17 +252,14 @@ jobs:
           # 下载中文描述文件
           cp ../descriptions-zh.json ./
 
-          # 生成 index.json
-          cat > index.json << 'JSONEOF'
-{
-  "version": 2,
-  "generated_at": "TIMESTAMP_PLACEHOLDER",
-  "repository": "https://github.com/yanghao1143/chicode-extensions",
-  "total_count": TOTAL_PLACEHOLDER,
-  "extensions": [
-JSONEOF
-
-          sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -Iseconds)/" index.json
+          # 生成 index.json 头部
+          TIMESTAMP=$(date -Iseconds)
+          echo "{" > index.json
+          echo "  \"version\": 2," >> index.json
+          echo "  \"generated_at\": \"${TIMESTAMP}\"," >> index.json
+          echo "  \"repository\": \"https://github.com/yanghao1143/chicode-extensions\"," >> index.json
+          echo "  \"total_count\": TOTAL_PLACEHOLDER," >> index.json
+          echo "  \"extensions\": [" >> index.json
 
           # 计数
           TOTAL=0
@@ -341,6 +338,7 @@ JSONEOF
         run: |
           cd dist
           TOTAL=$(ls *.tar.gz 2>/dev/null | wc -l)
+          TIMESTAMP=$(date -Iseconds)
 
           if gh release view extensions-latest > /dev/null 2>&1; then
             echo "Deleting old release..."
@@ -348,28 +346,30 @@ JSONEOF
           fi
 
           echo "Creating new release with $TOTAL extensions..."
+
+          # 创建 release notes 文件
+          cat > /tmp/release-notes.md << EOF
+          ## Chi Code 扩展包 (自动编译)
+
+          更新时间: ${TIMESTAMP}
+          扩展总数: ${TOTAL} 个
+
+          ### 使用方法
+
+          Chi Code 会自动从此处获取扩展列表。
+
+          ### 手动下载
+
+          下载单个扩展:
+          https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/{id}.tar.gz
+
+          获取索引:
+          https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/index.json
+          EOF
+
           gh release create extensions-latest \
             --title "Chi Code Extensions (Latest) - $TOTAL 个扩展" \
-            --notes "## Chi Code 扩展包 (自动编译)
-
-更新时间: $(date -Iseconds)
-扩展总数: **$TOTAL** 个
-
-### 使用方法
-
-Chi Code 会自动从此处获取扩展列表。
-
-### 手动下载
-
-下载单个扩展:
-\`\`\`
-https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/{id}.tar.gz
-\`\`\`
-
-获取索引:
-\`\`\`
-https://github.com/yanghao1143/chicode-extensions/releases/download/extensions-latest/index.json
-\`\`\`"
+            --notes-file /tmp/release-notes.md
 
       - name: Upload Release Assets
         env:
