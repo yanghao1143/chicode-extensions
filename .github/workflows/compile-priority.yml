@@ -114,16 +114,56 @@ jobs:
         run: |
           cd dist
 
-          # 读取 extensions.toml 获取仓库信息
-          cat > index.json << 'JSONEOF'
-          {
-            "version": 2,
-            "generated_at": "TIMESTAMP_PLACEHOLDER",
-            "repository": "https://github.com/yanghao1143/chicode-extensions",
-            "extensions": [
-          JSONEOF
+          # 中文描述映射
+          declare -A descriptions
+          descriptions["catppuccin"]="🎨 Catppuccin 主题 - 柔和的粉彩配色方案"
+          descriptions["dart"]="🎯 Dart 语言支持 - Flutter 开发必备"
+          descriptions["dockerfile"]="🐳 Dockerfile 语法高亮和支持"
+          descriptions["dracula"]="🧛 Dracula 主题 - 经典暗色主题"
+          descriptions["elixir"]="💧 Elixir 语言支持 - 函数式编程"
+          descriptions["git-firefly"]="🔥 Git Firefly 主题"
+          descriptions["java"]="☕ Java 语言支持 - 企业级开发"
+          descriptions["kotlin"]="🎯 Kotlin 语言支持 - 现代 Android 开发"
+          descriptions["lua"]="🌙 Lua 语言支持 - 游戏脚本开发"
+          descriptions["make"]="🔧 Makefile 语法支持"
+          descriptions["nord"]="❄️ Nord 主题 - 北极风格配色"
+          descriptions["php"]="🐘 PHP 语言支持 - Web 后端开发"
+          descriptions["ruby"]="💎 Ruby 语言支持 - Rails 开发"
+          descriptions["scala"]="⚡ Scala 语言支持 - 大数据开发"
+          descriptions["sql"]="🗃️ SQL 语法高亮支持"
+          descriptions["swift"]="🍎 Swift 语言支持 - iOS/macOS 开发"
+          descriptions["toml"]="📄 TOML 配置文件支持"
+          descriptions["html"]="🌐 HTML 语言支持"
 
-          # 替换时间戳
+          # 中文名称映射
+          declare -A names
+          names["catppuccin"]="Catppuccin 主题"
+          names["dart"]="Dart 语言"
+          names["dockerfile"]="Dockerfile"
+          names["dracula"]="Dracula 主题"
+          names["elixir"]="Elixir 语言"
+          names["git-firefly"]="Git Firefly"
+          names["java"]="Java 语言"
+          names["kotlin"]="Kotlin 语言"
+          names["lua"]="Lua 语言"
+          names["make"]="Makefile"
+          names["nord"]="Nord 主题"
+          names["php"]="PHP 语言"
+          names["ruby"]="Ruby 语言"
+          names["scala"]="Scala 语言"
+          names["sql"]="SQL"
+          names["swift"]="Swift 语言"
+          names["toml"]="TOML"
+          names["html"]="HTML"
+
+          cat > index.json << 'JSONEOF'
+{
+  "version": 2,
+  "generated_at": "TIMESTAMP_PLACEHOLDER",
+  "repository": "https://github.com/yanghao1143/chicode-extensions",
+  "extensions": [
+JSONEOF
+
           sed -i "s/TIMESTAMP_PLACEHOLDER/$(date -Iseconds)/" index.json
 
           first=true
@@ -131,23 +171,33 @@ jobs:
             [ -f "$f" ] || continue
             ext_id="${f%.tar.gz}"
 
-            # 从原仓库的 extensions.toml 获取 repository 信息
+            # 从扩展的 extension.toml 获取 repository
             repo_url=""
-            if [ -f "../extensions.toml" ]; then
-              repo_url=$(grep -A5 "^\[${ext_id}\]" ../extensions.toml 2>/dev/null | grep "repository" | cut -d'"' -f2 || echo "")
+            ext_dir="../extensions/$ext_id"
+            if [ -f "$ext_dir/extension.toml" ]; then
+              repo_url=$(grep "^repository" "$ext_dir/extension.toml" 2>/dev/null | head -1 | cut -d'"' -f2 || echo "")
             fi
 
-            # 如果没找到，使用默认格式
-            if [ -z "$repo_url" ]; then
-              repo_url="https://github.com/zed-industries/zed"
+            # 从 .gitmodules 获取
+            if [ -z "$repo_url" ] && [ -f "../.gitmodules" ]; then
+              repo_url=$(grep -A2 "extensions/$ext_id\]" ../.gitmodules 2>/dev/null | grep "url" | cut -d'=' -f2 | tr -d ' ' || echo "")
             fi
+
+            # 默认值
+            if [ -z "$repo_url" ]; then
+              repo_url="https://github.com/yanghao1143/chicode-extensions"
+            fi
+
+            # 获取中文描述和名称
+            desc="${descriptions[$ext_id]:-Chi Code 扩展: $ext_id}"
+            name="${names[$ext_id]:-$ext_id}"
 
             if [ "$first" = true ]; then
               first=false
             else
               echo "," >> index.json
             fi
-            echo -n "    {\"id\": \"$ext_id\", \"repository\": \"$repo_url\", \"priority\": true}" >> index.json
+            echo -n "    {\"id\": \"$ext_id\", \"name\": \"$name\", \"description\": \"$desc\", \"repository\": \"$repo_url\", \"priority\": true}" >> index.json
           done
 
           echo "" >> index.json
