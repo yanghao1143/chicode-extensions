@@ -37,43 +37,12 @@ jobs:
 
           # 分批
           BATCH_SIZE=${{ github.event.inputs.batch_size || '50' }}
-          BATCHES=()
           BATCH_NUM=0
           COUNT=0
           CURRENT_BATCH=""
 
-          for ext in $EXTENSIONS; do
-            if [ $COUNT -ge $BATCH_SIZE ]; then
-              BATCHES+=("$BATCH_NUM")
-              echo "BATCH_${BATCH_NUM}=${CURRENT_BATCH}" >> $GITHUB_ENV
-              BATCH_NUM=$((BATCH_NUM + 1))
-              COUNT=0
-              CURRENT_BATCH=""
-            fi
-            if [ -n "$CURRENT_BATCH" ]; then
-              CURRENT_BATCH="${CURRENT_BATCH},${ext}"
-            else
-              CURRENT_BATCH="${ext}"
-            fi
-            COUNT=$((COUNT + 1))
-          done
-
-          # 最后一批
-          if [ -n "$CURRENT_BATCH" ]; then
-            BATCHES+=("$BATCH_NUM")
-            echo "BATCH_${BATCH_NUM}=${CURRENT_BATCH}" >> $GITHUB_ENV
-          fi
-
-          # 输出矩阵
-          MATRIX_JSON=$(printf '%s\n' "${BATCHES[@]}" | jq -R . | jq -s '{batch: .}')
-          echo "matrix=${MATRIX_JSON}" >> $GITHUB_OUTPUT
-          echo "Matrix: ${MATRIX_JSON}"
-
-          # 保存批次到文件
           mkdir -p batches
-          BATCH_NUM=0
-          COUNT=0
-          CURRENT_BATCH=""
+
           for ext in $EXTENSIONS; do
             if [ $COUNT -ge $BATCH_SIZE ]; then
               echo "$CURRENT_BATCH" > "batches/batch_${BATCH_NUM}.txt"
@@ -82,16 +51,25 @@ jobs:
               CURRENT_BATCH=""
             fi
             if [ -n "$CURRENT_BATCH" ]; then
-              CURRENT_BATCH="${CURRENT_BATCH}
-          ${ext}"
+              CURRENT_BATCH=$(printf "%s\n%s" "$CURRENT_BATCH" "$ext")
             else
               CURRENT_BATCH="${ext}"
             fi
             COUNT=$((COUNT + 1))
           done
+
+          # 最后一批
           if [ -n "$CURRENT_BATCH" ]; then
             echo "$CURRENT_BATCH" > "batches/batch_${BATCH_NUM}.txt"
           fi
+
+          # 生成批次数组 [0, 1, 2, ...]
+          BATCH_COUNT=$((BATCH_NUM + 1))
+          BATCH_ARRAY=$(seq 0 $BATCH_NUM | jq -R . | jq -sc '.')
+          MATRIX_JSON="{\"batch\":${BATCH_ARRAY}}"
+          echo "matrix=${MATRIX_JSON}" >> $GITHUB_OUTPUT
+          echo "Matrix: ${MATRIX_JSON}"
+          echo "Total batches: $BATCH_COUNT"
 
       - name: Upload batches
         uses: actions/upload-artifact@v4
